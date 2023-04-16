@@ -33,12 +33,14 @@ void dehaze(cv::Mat &src, cv::Mat &dst)
 {
     int start_heap = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
     printf("Start dehaze, Free heap: %d bytes", start_heap);
-    ESP_LOGI(TAG, "uxTaskGetStackHighWaterMark: %d bytes", uxTaskGetStackHighWaterMark(NULL));
+    
     
     printf("");
     printf("+++ Calculating dark channel");
+    long start_darkc = esp_timer_get_time();
     Mat te;
     DarkChannel(src,15,te);
+    long stop_darkc = esp_timer_get_time();
     printf("--- Returning dark...");
 
     // printf("Storing Dark channel");
@@ -46,12 +48,16 @@ void dehaze(cv::Mat &src, cv::Mat &dst)
 
     printf("");
     printf("+++ Calculating AtmLight");
+    long start_atml = esp_timer_get_time();
     Scalar A = AtmLight(src,te);
+    long stop_atml = esp_timer_get_time();
     printf("--- Returning AtmLight...");
 
     printf("");
     printf("+++ Calculating TransmissionEstimate");
+    long start_tranEst = esp_timer_get_time();
     TransmissionEstimate(src,A,15, te);
+    long stop_tranEst = esp_timer_get_time();
     printf("--- Returning TransmissionEstimate...");
 
     // printf("Storing TransmissionEstimate");
@@ -59,7 +65,9 @@ void dehaze(cv::Mat &src, cv::Mat &dst)
 
     printf("");
     printf("+++ Calculating TransmissionRefine");
+    long start_tranRef = esp_timer_get_time();
     TransmissionRefine(src, te);
+    long stop_tranRef = esp_timer_get_time();
     printf("--- Returning TransmissionRefine...");
 
     // printf("Storing TransmissionRefine");
@@ -67,12 +75,20 @@ void dehaze(cv::Mat &src, cv::Mat &dst)
 
     printf("");
     printf("+++ Calculating Recover");
+    long start_recover = esp_timer_get_time();
     Recover(src, te, dst, A, 1);
+    long stop_recover = esp_timer_get_time();
     printf("--- Returning Recover...");
 
     int end_heap = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
     printf("End dehaze, Free heap: %d bytes", end_heap);
-    printf("Total memory used by dehaze: %d bytes", (start_heap - end_heap));
+    ESP_LOGW(TAG,"Total memory used by dehaze: %d bytes", (start_heap - end_heap));
+
+    printf("Total time used for darkchannel: %07li us", (stop_darkc - start_darkc));
+    printf("Total time used for atmLight:    %07li us", (stop_atml - start_atml));
+    printf("Total time used for TransEst:    %07li us", (stop_tranEst - start_tranEst));
+    printf("Total time used for TransRef:    %07li us", (stop_tranRef - start_tranRef));
+    printf("Total time used for Recover:     %07li us", (stop_recover - start_recover));
 
     return; 
 }
@@ -81,7 +97,7 @@ const Scalar AtmLight(Mat &im, Mat &dark)
 {
     int start_heap = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
     printf("Start AtmLight, Free heap: %d bytes", start_heap);
-    ESP_LOGI(TAG, "uxTaskGetStackHighWaterMark: %d bytes", uxTaskGetStackHighWaterMark(NULL));
+    
 
     int _rows = im.rows;
     int _cols = im.cols;
@@ -112,7 +128,7 @@ const Scalar AtmLight(Mat &im, Mat &dark)
 
     int end_heap = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
     printf("End AtmLight, Free heap: %d bytes", end_heap);
-    printf("Total memory used by AtmLight: %d bytes", (start_heap - end_heap));
+    ESP_LOGW(TAG,"Total memory used by AtmLight: %d bytes", (start_heap - end_heap));
 
     return atmsum;
 }
@@ -121,7 +137,7 @@ void DarkChannel(Mat &img, int sz,  Mat &dst)
 {
     int start_heap = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
     printf("Start DarkChannel, Free heap: %d bytes", start_heap);
-    ESP_LOGI(TAG, "uxTaskGetStackHighWaterMark: %d bytes", uxTaskGetStackHighWaterMark(NULL));
+    
 
     dst = Mat::zeros(img.rows, img.cols, CV_8UC1);
     
@@ -148,14 +164,14 @@ void DarkChannel(Mat &img, int sz,  Mat &dst)
 
     int end_heap = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
     printf("End DarkChannel, Free heap: %d bytes", end_heap);
-    printf("Total memory used by DarkChannel: %d bytes", (start_heap - end_heap));
+    ESP_LOGW(TAG,"Total memory used by DarkChannel: %d bytes", (start_heap - end_heap));
 }
 
 void TransmissionEstimate(Mat &im, Scalar A, int sz, Mat &dst)
 {
     int start_heap = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
     printf("Start TransmissionEstimate, Free heap: %d bytes", start_heap);
-    ESP_LOGI(TAG, "uxTaskGetStackHighWaterMark: %d bytes", uxTaskGetStackHighWaterMark(NULL));
+    
 
     float omega = 0.95;
     Mat im3;
@@ -183,7 +199,7 @@ void TransmissionEstimate(Mat &im, Scalar A, int sz, Mat &dst)
 
     int end_heap = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
     printf("End TransmissionEstimate, Free heap: %d bytes", end_heap);
-    printf("Total memory used by TransmissionEstimate: %d bytes", (start_heap - end_heap));
+    ESP_LOGW(TAG,"Total memory used by TransmissionEstimate: %d bytes", (start_heap - end_heap));
 }
 
 
@@ -191,43 +207,35 @@ void TransmissionEstimate(Mat &im, Scalar A, int sz, Mat &dst)
 void TransmissionRefine(Mat &im, Mat &et)
 {
     int start_heap = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-    printf("Start TransmissionRefine, Free heap: %d bytes", start_heap);
-    ESP_LOGI(TAG, "uxTaskGetStackHighWaterMark: %d bytes", uxTaskGetStackHighWaterMark(NULL));
+    printf("++ Start TransmissionRefine, Free heap: %d bytes", start_heap);
+    
  
     Mat gray;
     cvtColor(im, gray, cv::COLOR_BGR2GRAY);
 
     // downscale
-    printf("Before pyrdown, gray rows: %d, cols: %d", gray.rows, gray.cols);
-    printf("Before pyrdown, et rows: %d, cols: %d", et.rows, et.cols);
     cv::pyrDown(et,et);
     cv::pyrDown(gray,gray);
-    printf("After pyrdown, gray rows: %d, cols: %d", gray.rows, gray.cols);
-    printf("After pyrdown, et rows: %d, cols: %d", et.rows, et.cols);
     
 
     Guidedfilter(gray, et, 60, 0.0001);
 
 
     // upscale
-    printf("Before pyrUp, gray rows: %d, cols: %d", gray.rows, gray.cols);
-    printf("Before pyrUp, et rows: %d, cols: %d", et.rows, et.cols);
     cv::pyrUp(et,et);
-    cv::pyrUp(gray,gray);
-    printf("After pyrUp, gray rows: %d, cols: %d", gray.rows, gray.cols);
-    printf("After pyrUp, et rows: %d, cols: %d", et.rows, et.cols);
+    gray.release();
 
 
     int end_heap = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-    printf("End TransmissionRefine, Free heap: %d bytes", end_heap);
-    printf("Total memory used by TransmissionRefine: %d bytes", (start_heap - end_heap));
+    printf("++ End TransmissionRefine, Free heap: %d bytes", end_heap);
+    ESP_LOGW(TAG,"++ Total memory used by TransmissionRefine: %d bytes", (start_heap - end_heap));
 }
 
 void Guidedfilter(Mat &im_grey, Mat &transmission_map, int r, float eps)
 { 
     int start_heap = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-    printf("Start Guidedfilter, Free heap: %d bytes", start_heap);
-    ESP_LOGI(TAG, "uxTaskGetStackHighWaterMark: %d bytes", uxTaskGetStackHighWaterMark(NULL));
+    printf("++++ Start Guidedfilter, Free heap: %d bytes", start_heap);
+    
  
     // Conver to float
     transmission_map.convertTo(transmission_map, CV_32FC1);
@@ -289,14 +297,25 @@ void Guidedfilter(Mat &im_grey, Mat &transmission_map, int r, float eps)
     mean_Ip.release();
     mean_II.release();
 
+
+    // printf("Before CopyTo, Free heap: %d bytes", heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+
+    // Mat temp;
+    // transmission_map.copyTo(temp);
+
+    // printf("After CopyTo, Free heap: %d bytes", heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+
     int end_heap = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-    printf("End Guidedfilter, Free heap: %d bytes", end_heap);
-    printf("Total memory used by Guidedfilter: %d bytes", (start_heap - end_heap));
+    printf("++++ End Guidedfilter, Free heap: %d bytes", end_heap);
+    ESP_LOGW(TAG,"++++ Total memory used by Guidedfilter: %d bytes", (start_heap - end_heap));
 }
 
 
 void Recover(Mat &im, Mat &t, Mat &dst, Scalar A, int tx)
 {
+    int start_heap = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    printf("++++ Start Recover, Free heap: %d bytes", start_heap);
+    
     dst = Mat::zeros(im.rows, im.cols, im.type());
     
     for(int _row = 0; _row < dst.rows; _row++)
@@ -311,5 +330,8 @@ void Recover(Mat &im, Mat &t, Mat &dst, Scalar A, int tx)
             dst.at<Vec3b>(_row, _col)[2] = cv::abs((im.at<Vec3b>(_row, _col)[2] - A.val[2])*factor + A.val[2]);
         }
     }
+    int end_heap = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    printf("++++ End Recover, Free heap: %d bytes", end_heap);
+    ESP_LOGW(TAG,"++++ Total memory used by Recover: %d bytes", (start_heap - end_heap));
 }
 
