@@ -46,11 +46,19 @@ extern "C"
 void write_to_file(const char *file_dst, unsigned char *data, size_t lenght);
 void read_from_file(const char *file_src, unsigned char **data, size_t *lenght);
 void write_MAT_to_file(const char *file_dst, cv::Mat &src);
+void dehaze_task(void *arg);
 
-void app_main(void)
+void app_main()
 {
     ESP_LOGI(TAG, "Starting main");
-    ESP_LOGI(TAG, "Convert to Grey");
+
+    /* Start the tasks */
+    xTaskCreatePinnedToCore(dehaze_task, "dehaze", 1024 * 9, nullptr, 24, nullptr, 0);
+}
+
+void dehaze_task(void *arg)
+{
+    ESP_LOGI(TAG, "Starting dehaze_task");
     
     ESP_LOGI(TAG, "Free heap: %u bytes", heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
     ESP_LOGI(TAG, "uxTaskGetStackHighWaterMark: %u bytes", uxTaskGetStackHighWaterMark(NULL));
@@ -189,7 +197,7 @@ void app_main(void)
     ESP_LOGI(TAG, "uxTaskGetStackHighWaterMark: %u bytes", uxTaskGetStackHighWaterMark(NULL));
 
     // Create output file
-    const char *file_dst = MOUNT_POINT "/fuente2.bin";
+    const char *file_dst = MOUNT_POINT "/restored.bin";
     write_MAT_to_file(file_dst, J);
 
     ESP_LOGE(TAG, "Exit.....");
