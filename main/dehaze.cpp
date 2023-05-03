@@ -12,6 +12,14 @@
 #include <vector>
 
 #include "dehaze.h"
+#include "shared_rtos.h"
+#include "offload_task.h"
+
+
+QueueHandle_t       xDehazeToOffload_Queue;
+// QueueHandle_t       xOffloadToDehaze_Queue;
+EventGroupHandle_t  xMatEvents;
+// TaskHandle_t        offload_task_handle = NULL;
 
 using namespace cv;
 using namespace std;
@@ -20,77 +28,189 @@ static char TAG[] = "dehaze";
 
 #define printf(...) ESP_LOGI(TAG, ##__VA_ARGS__)
 
-extern void write_MAT_to_file(const char *file_dst, cv::Mat &src);
+extern void  write_MAT_to_file(const char *file_dst, cv::Mat &src);
+void         parallel_DarkChannel(Mat &src_T, Mat &src_B, int sz, Mat &dst_T, Mat &dst_B);
+const Scalar parallel_AtmLight(Mat &src_T, Mat &src_B, Mat &dark_T, Mat &dark_B);
+void         parallel_TransmissionEstimate(Mat &src_T, Mat &src_B, Scalar A, int sz, Mat &dst_T, Mat &dst_B);
+void         parallel_TransmissionRefine(Mat &src_T, Mat &src_B, Mat &dst_T, Mat &dst_B);
+void         parallel_Recover(Mat &src_T, Mat &src_B, Mat &te_T, Mat &te_B, Mat &dst_T, Mat &dst_B, Scalar A,  int tx);
 
-void DarkChannel(cv::Mat &img, int sz,  cv::Mat &dst);
-const cv::Scalar AtmLight(cv::Mat &img, cv::Mat &dark);
-void TransmissionEstimate(cv::Mat &im, cv::Scalar A, int sz, cv::Mat &dst);
-void Recover(Mat &im, Mat &t, Mat &dst, Scalar A, int tx);
-void TransmissionRefine(cv::Mat &im, cv::Mat &et);
-void Guidedfilter(cv::Mat &im_grey, cv::Mat &transmission_map, int r, float eps);
+static xQMatMessage _message;
+static xQMatMessage *message_tx = &_message;
+static EventBits_t  uxBits = 0x00;
+
+// Measure time
+long stop_darkc, start_darkc, stop_atml, start_atml, stop_tranEst, start_tranEst = 0;
+long stop_tranRef, start_tranRef, stop_recover, start_recover = 0;
+
 
 void dehaze(cv::Mat &src, cv::Mat &dst)
 {
+    message_tx->id      = 0;
+    message_tx->opcode  = (dehaze_op)0;
+    message_tx->src      = NULL;
+    message_tx->dst      = NULL;
+    message_tx->aux      = NULL;
+    message_tx->atmlight= NULL;
+    // static xQMatMessage *message_rx;
+
     int start_heap = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
     printf("Start dehaze, Free heap: %d bytes", start_heap);
     
+    Mat te;
+    te  = Mat(src.rows, src.cols, CV_8UC1);
     
+    Mat te_T, te_B, src_T, src_B, dst_T, dst_B;
+
+    printf("Splitting Src Mat");
+    mat_split(src, src_T, src_B);
+    printf("Splitting te Mat");
+    mat_split(te, te_T, te_B);
+
     printf("");
     printf("+++ Calculating dark channel");
-    long start_darkc = esp_timer_get_time();
-    Mat te;
+    start_darkc = esp_timer_get_time();
+    
+#if !defined(PARALELLIZE)
     DarkChannel(src,15,te);
-    long stop_darkc = esp_timer_get_time();
-    printf("--- Returning dark...");
+#else
+    parallel_DarkChannel(src_T, src_B, 15, te_T, te_B); 
+#endif
 
-    // printf("Storing Dark channel");
-    // write_MAT_to_file("/sdcard/darkc.bin", te);
+    stop_darkc = esp_timer_get_time();
+
+    printf("Storing Dark channel");
+    write_MAT_to_file("/sdcard/darkc.bin", te);
 
     printf("");
     printf("+++ Calculating AtmLight");
-    long start_atml = esp_timer_get_time();
+    start_atml = esp_timer_get_time();
+
+#if !defined(PARALELLIZE)
     Scalar A = AtmLight(src,te);
-    long stop_atml = esp_timer_get_time();
+#else
+    Scalar A = parallel_AtmLight(src_T, src_B, te_T, te_B);
+#endif
+    
+    printf("Atmlight = [%f %f %f]", A.val[0], A.val[1], A.val[2]);
+    stop_atml = esp_timer_get_time();
     printf("--- Returning AtmLight...");
+
 
     printf("");
     printf("+++ Calculating TransmissionEstimate");
-    long start_tranEst = esp_timer_get_time();
+    start_tranEst = esp_timer_get_time();
+
+#if !defined(PARALELLIZE)
     TransmissionEstimate(src,A,15, te);
-    long stop_tranEst = esp_timer_get_time();
+#else
+    parallel_TransmissionEstimate(src_T, src_B, A, 15, te_T, te_B);
+#endif
+
+    stop_tranEst = esp_timer_get_time();
     printf("--- Returning TransmissionEstimate...");
 
-    // printf("Storing TransmissionEstimate");
-    // write_MAT_to_file("/sdcard/t_est.bin", te);
+    printf("Storing TransmissionEstimate");
+    write_MAT_to_file("/sdcard/t_est.bin", te);
+
 
     printf("");
     printf("+++ Calculating TransmissionRefine");
-    long start_tranRef = esp_timer_get_time();
+    start_tranRef = esp_timer_get_time();
+    
+#if !defined(PARALELLIZE)
     TransmissionRefine(src, te);
-    long stop_tranRef = esp_timer_get_time();
+#else
+    parallel_TransmissionRefine(src_T, src_B, te_T, te_B);
+#endif
+
+    stop_tranRef = esp_timer_get_time();
     printf("--- Returning TransmissionRefine...");
 
-    // printf("Storing TransmissionRefine");
-    // write_MAT_to_file("/sdcard/t_ref.bin", te);
+    printf("Storing TransmissionRefine");
+    write_MAT_to_file("/sdcard/t_ref.bin", te);
 
     printf("");
     printf("+++ Calculating Recover");
-    long start_recover = esp_timer_get_time();
+    start_recover = esp_timer_get_time();
+    
+#if !defined(PARALELLIZE)
     Recover(src, te, dst, A, 1);
-    long stop_recover = esp_timer_get_time();
+#else
+    dst = Mat(src.rows, src.cols, CV_8UC3);
+    printf("Splitting dst Mat");
+    mat_split(dst, dst_T, dst_B);
+
+    parallel_Recover(src_T, src_B, te_T, te_B, dst_T, dst_B, A, 1);
+#endif
+
+    stop_recover = esp_timer_get_time();
     printf("--- Returning Recover...");
 
     int end_heap = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
     printf("End dehaze, Free heap: %d bytes", end_heap);
     ESP_LOGW(TAG,"Total memory used by dehaze: %d bytes", (start_heap - end_heap));
 
-    printf("Total time used for darkchannel: %07li us", (stop_darkc - start_darkc));
-    printf("Total time used for atmLight:    %07li us", (stop_atml - start_atml));
-    printf("Total time used for TransEst:    %07li us", (stop_tranEst - start_tranEst));
-    printf("Total time used for TransRef:    %07li us", (stop_tranRef - start_tranRef));
-    printf("Total time used for Recover:     %07li us", (stop_recover - start_recover));
+    long darkc_time    = (stop_darkc - start_darkc);
+    long atml_time     = (stop_atml - start_atml);
+    long transEst_time = (stop_tranEst - start_tranEst);
+    long transRef_time = (stop_tranRef - start_tranRef);
+    long recover_time  = (stop_recover - start_recover);
+    long dehaze_time   = darkc_time + atml_time + transEst_time + transRef_time + recover_time;
+
+    printf("Total time used for darkchannel: %07li us", darkc_time);
+    printf("Total time used for atmLight:    %07li us", atml_time);
+    printf("Total time used for TransEst:    %07li us", transEst_time);
+    printf("Total time used for TransRef:    %07li us", transRef_time);
+    printf("Total time used for Recover:     %07li us", recover_time);
+    printf("Total time used for dehaze:      %07li us", dehaze_time);
 
     return; 
+}
+
+void mat_split(Mat &src, Mat &top, Mat &bot)
+{
+    printf("Mat :: rows = %d, cols = %d", src.rows, src.cols);
+    printf("Mat :: rows/2 = %d", src.rows/2);
+    top = src(Range(0,src.rows/2), Range(0,src.cols));
+    bot = src(Range(src.rows/2,src.rows), Range(0,src.cols));
+}
+
+const Scalar parallel_AtmLight(Mat &src_T, Mat &src_B, Mat &dark_T, Mat &dark_B)
+{
+    Scalar A_B; 
+    Scalar A_T;
+    Scalar A; 
+    printf("Sending message");
+    message_tx->id      = 420;
+    message_tx->opcode  = ATMLIGHT_OP;
+    message_tx->src      = &src_B;
+    message_tx->dst      = &dark_B;
+    message_tx->atmlight= &A_B;
+    xQueueSend( xDehazeToOffload_Queue, ( void * ) &message_tx, ( TickType_t ) 0 );
+
+    // Process half Mat
+    A_T = AtmLight(src_T, dark_T);
+
+    printf("Waiting Rendezvous");   
+    uxBits = xEventGroupWaitBits(xMatEvents,       // Event group handler
+                                 MAT_SPLIT_EVENT,  // Event to wait for
+                                 pdTRUE,           // clear bits
+                                 pdFALSE,          // do not wait for all, either event suffice
+                                 portMAX_DELAY);   // wait forever
+    
+    printf("Rendezvous received");   
+    
+    // consolidate atmospheric light
+    A.val[0] = cv::max(A_T.val[0], A_B.val[0]);
+    A.val[1] = cv::max(A_T.val[1], A_B.val[1]);
+    A.val[2] = cv::max(A_T.val[2], A_B.val[2]);
+    
+    printf("A_T           = [%f %f %f]", A_T.val[0], A_T.val[1], A_T.val[2]);
+    printf("message_rx->A = [%f %f %f]", A_B.val[0], A_B.val[1], A_B.val[2]);
+    printf("A             = [%f %f %f]", A.val[0], A.val[1], A.val[2]);
+
+    return A;
 }
 
 const Scalar AtmLight(Mat &im, Mat &dark)
@@ -133,12 +253,33 @@ const Scalar AtmLight(Mat &im, Mat &dark)
     return atmsum;
 }
 
+void parallel_DarkChannel(Mat &src_T, Mat &src_B, int sz, Mat &dst_T, Mat &dst_B)
+{
+    printf("Sending message");
+    message_tx->id      = 911;
+    message_tx->opcode  = DARK_CHANNEL_OP;
+    message_tx->src      = &src_B;
+    message_tx->dst      = &dst_B;
+    xQueueSend( xDehazeToOffload_Queue, ( void * ) &message_tx, ( TickType_t ) 0 );
+
+    // Process half Mat
+    DarkChannel(src_T, sz, dst_T);
+
+    printf("Waiting Rendezvous");   
+    uxBits = xEventGroupWaitBits(xMatEvents,       // Event group handler
+                                 MAT_SPLIT_EVENT,  // Event to wait for
+                                 pdTRUE,           // clear bits
+                                 pdFALSE,          // do not wait for all, either event suffice
+                                 portMAX_DELAY);   // wait forever
+    
+    printf("Rendezvous received");   
+}
+
 void DarkChannel(Mat &img, int sz,  Mat &dst)
 {
     int start_heap = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
     printf("Start DarkChannel, Free heap: %d bytes", start_heap);
     
-
     dst = Mat::zeros(img.rows, img.cols, CV_8UC1);
     
     // Reduce memory
@@ -152,19 +293,38 @@ void DarkChannel(Mat &img, int sz,  Mat &dst)
 
     printf("Start spltting, Free heap: %d bytes",  heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
 
-   
-   
-
-
-
     // 'erode' image, so calculate the minimun value in the window given by sz
     Mat kernel = getStructuringElement(cv::MorphShapes::MORPH_RECT, Size(sz,sz));
     
-    cv::erode(dst, dst, kernel);
+    cv::erode(dst, dst, kernel, Point((int)(sz/2),(int)(sz/2)), 1, cv::BORDER_REFLECT_101);
 
     int end_heap = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
     printf("End DarkChannel, Free heap: %d bytes", end_heap);
-    ESP_LOGW(TAG,"Total memory used by DarkChannel: %d bytes", (start_heap - end_heap));
+    printf("Total memory used by DarkChannel: %d bytes", (start_heap - end_heap));
+}
+
+void parallel_TransmissionEstimate(Mat &src_T, Mat &src_B, Scalar A, int sz, Mat &dst_T, Mat &dst_B)
+{
+    printf("Sending message");
+    message_tx->id      = 690;
+    message_tx->opcode  = TRANSMITION_ESTIMATE_OP;
+    message_tx->src      = &src_B;
+    message_tx->dst      = &dst_B;
+    message_tx->atmlight= &A;
+    message_tx->ksize   = sz;
+    xQueueSend( xDehazeToOffload_Queue, ( void * ) &message_tx, ( TickType_t ) 0 );
+
+    // Process half Mat
+    TransmissionEstimate(src_T, A, sz, dst_T);
+
+    printf("Waiting Rendezvous");   
+    uxBits = xEventGroupWaitBits(xMatEvents,       // Event group handler
+                                 MAT_SPLIT_EVENT,  // Event to wait for
+                                 pdTRUE,           // clear bits
+                                 pdFALSE,          // do not wait for all, either event suffice
+                                 portMAX_DELAY);   // wait forever
+    
+    printf("Rendezvous received");  
 }
 
 void TransmissionEstimate(Mat &im, Scalar A, int sz, Mat &dst)
@@ -172,9 +332,8 @@ void TransmissionEstimate(Mat &im, Scalar A, int sz, Mat &dst)
     int start_heap = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
     printf("Start TransmissionEstimate, Free heap: %d bytes", start_heap);
     
-
     float omega = 0.95;
-    Mat im3;
+    Mat iaux;
 
     vector<Mat> im_ch(3);
     cv::split(im, im_ch);
@@ -183,7 +342,7 @@ void TransmissionEstimate(Mat &im, Scalar A, int sz, Mat &dst)
     im_ch[1] = (im_ch[1] / A.val[1]) * 255;
     im_ch[2] = (im_ch[2] / A.val[2]) * 255;
 
-    cv::merge(im_ch, im3);
+    cv::merge(im_ch, iaux);
 
     for(int i = 0; i < im_ch.size(); i++)
     {
@@ -191,25 +350,51 @@ void TransmissionEstimate(Mat &im, Scalar A, int sz, Mat &dst)
     }
 
     Mat _dark;
-    DarkChannel(im3,sz,_dark);
+    DarkChannel(iaux,sz,_dark);
     dst = 255 - omega*_dark;
 
     _dark.release();
-    im3.release();
+    iaux.release();
 
     int end_heap = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
     printf("End TransmissionEstimate, Free heap: %d bytes", end_heap);
     ESP_LOGW(TAG,"Total memory used by TransmissionEstimate: %d bytes", (start_heap - end_heap));
 }
 
+void parallel_TransmissionRefine(Mat &src_T, Mat &src_B, Mat &dst_T, Mat &dst_B)
+{
+    ESP_LOGI(TAG, "uxTaskGetStackHighWaterMark: %u bytes, Core: %d", uxTaskGetStackHighWaterMark(NULL), xPortGetCoreID());
 
+    printf("Sending message");
+    message_tx->id      = 123;
+    message_tx->opcode  = TRANSMITION_REFINE_OP;
+    message_tx->src      = &src_B;
+    message_tx->dst      = &dst_B;
+    message_tx->atmlight= NULL;
+    message_tx->ksize   = 0;
+    xQueueSend( xDehazeToOffload_Queue, ( void * ) &message_tx, ( TickType_t ) 0 );
+
+    // Process half Mat
+    TransmissionRefine(src_T, dst_T);
+
+    printf("Waiting Rendezvous");   
+    uxBits = xEventGroupWaitBits(xMatEvents,       // Event group handler
+                                 MAT_SPLIT_EVENT,  // Event to wait for
+                                 pdTRUE,           // clear bits
+                                 pdFALSE,          // do not wait for all, either event suffice
+                                 portMAX_DELAY);   // wait forever
+    
+    printf("Rendezvous received");  
+
+}
 
 void TransmissionRefine(Mat &im, Mat &et)
 {
+
     int start_heap = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
     printf("++ Start TransmissionRefine, Free heap: %d bytes", start_heap);
+    ESP_LOGI(TAG, "uxTaskGetStackHighWaterMark: %u bytes, Core: %d", uxTaskGetStackHighWaterMark(NULL), xPortGetCoreID());
     
- 
     Mat gray;
     cvtColor(im, gray, cv::COLOR_BGR2GRAY);
 
@@ -225,7 +410,6 @@ void TransmissionRefine(Mat &im, Mat &et)
     cv::pyrUp(et,et);
     gray.release();
 
-
     int end_heap = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
     printf("++ End TransmissionRefine, Free heap: %d bytes", end_heap);
     ESP_LOGW(TAG,"++ Total memory used by TransmissionRefine: %d bytes", (start_heap - end_heap));
@@ -235,7 +419,13 @@ void Guidedfilter(Mat &im_grey, Mat &transmission_map, int r, float eps)
 { 
     int start_heap = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
     printf("++++ Start Guidedfilter, Free heap: %d bytes", start_heap);
+    ESP_LOGI(TAG, "uxTaskGetStackHighWaterMark: %u bytes, Core: %d", uxTaskGetStackHighWaterMark(NULL), xPortGetCoreID());
     
+    Mat mean_I = Mat(im_grey.rows, im_grey.cols, CV_32FC1);
+    Mat mean_Ip = Mat(im_grey.rows, im_grey.cols, CV_32FC1);
+    Mat mean_II = Mat(im_grey.rows, im_grey.cols, CV_32FC1);
+
+    ESP_LOGI(TAG, "uxTaskGetStackHighWaterMark: %u bytes, Core: %d", uxTaskGetStackHighWaterMark(NULL), xPortGetCoreID());
  
     // Conver to float
     transmission_map.convertTo(transmission_map, CV_32FC1);
@@ -247,11 +437,6 @@ void Guidedfilter(Mat &im_grey, Mat &transmission_map, int r, float eps)
     im_grey = im_grey/255;
     
     printf("after converting im input to float, Free heap: %d bytes", heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
-
-    
-    Mat mean_I;
-    Mat mean_Ip;
-    Mat mean_II;
     
     // Mean
     mean_Ip = im_grey.mul(transmission_map);
@@ -262,7 +447,7 @@ void Guidedfilter(Mat &im_grey, Mat &transmission_map, int r, float eps)
     
     // cov_Ip
     // Mat cov_Ip = mean_Ip - mean_I.mul(mean_p);
-    mean_Ip = mean_Ip - mean_I.mul(transmission_map);
+    mean_Ip = mean_Ip - (mean_I).mul(transmission_map);
     
     // Mean
     mean_II = im_grey.mul(im_grey);
@@ -270,15 +455,15 @@ void Guidedfilter(Mat &im_grey, Mat &transmission_map, int r, float eps)
     
     // var_I
     // Mat var_I = mean_II - mean_I.mul(mean_I);
-    mean_II = mean_II - mean_I.mul(mean_I);
+    mean_II = mean_II - (mean_I).mul(mean_I);
     
     // a
     //  Mat a = cov_Ip/(var_I + eps);
     mean_II = cv::max(mean_II, eps);
-    mean_Ip = mean_Ip/mean_II;
+    mean_Ip = (mean_Ip)/(mean_II);
     // b
     // Mat b = mean_p - a.mul(mean_I);
-    mean_I = mean_Ip.mul(mean_I);
+    mean_I = (mean_Ip).mul(mean_I);
     mean_I = transmission_map - mean_I;
     
     // Mean
@@ -294,14 +479,12 @@ void Guidedfilter(Mat &im_grey, Mat &transmission_map, int r, float eps)
 
     // Release memory
     mean_I.release();
-    mean_Ip.release();
-    mean_II.release();
-
+    mean_I.release();
+    mean_I.release();
 
     // printf("Before CopyTo, Free heap: %d bytes", heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
 
-    // Mat temp;
-    // transmission_map.copyTo(temp);
+    Mat temp;
 
     // printf("After CopyTo, Free heap: %d bytes", heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
 
@@ -310,13 +493,40 @@ void Guidedfilter(Mat &im_grey, Mat &transmission_map, int r, float eps)
     ESP_LOGW(TAG,"++++ Total memory used by Guidedfilter: %d bytes", (start_heap - end_heap));
 }
 
+void parallel_Recover(Mat &src_T, Mat &src_B, Mat &te_T, Mat &te_B, Mat &dst_T, Mat &dst_B, Scalar A, int tx)
+{
+    printf("Sending message");
+    message_tx->id      = 369;
+    message_tx->opcode  = RECOVER_OP;
+    message_tx->src      = &src_B;
+    message_tx->dst      = &dst_B;
+    message_tx->aux      = &te_B;
+    message_tx->atmlight= &A;
+    message_tx->ksize   = tx;
+    xQueueSend( xDehazeToOffload_Queue, ( void * ) &message_tx, ( TickType_t ) 0 );
+
+    // Process half Mat
+    Recover(src_T, te_T, dst_T, A, tx);
+
+    printf("Waiting Rendezvous");   
+    uxBits = xEventGroupWaitBits(xMatEvents,       // Event group handler
+                                 MAT_SPLIT_EVENT,  // Event to wait for
+                                 pdTRUE,           // clear bits
+                                 pdFALSE,          // do not wait for all, either event suffice
+                                 portMAX_DELAY);   // wait forever
+    
+    printf("Rendezvous received");  
+
+}
 
 void Recover(Mat &im, Mat &t, Mat &dst, Scalar A, int tx)
 {
     int start_heap = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
     printf("++++ Start Recover, Free heap: %d bytes", start_heap);
     
+#if !defined(PARALELLIZE)
     dst = Mat::zeros(im.rows, im.cols, im.type());
+#endif
     
     for(int _row = 0; _row < dst.rows; _row++)
     {
