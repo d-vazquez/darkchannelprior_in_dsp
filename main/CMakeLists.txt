@@ -2,6 +2,9 @@ idf_component_register(
         SRCS
             main.cpp
             dehaze.cpp
+            offload_task.cpp
+            dehaze_task.cpp
+            filesystem.cpp
             
         INCLUDE_DIRS
             .
