@@ -30,5 +30,7 @@ typedef struct _queueMatMessage
 extern QueueHandle_t       xDehazeToOffload_Queue;
 extern EventGroupHandle_t  xMatEvents;
 
+extern TaskHandle_t mat_split_task_handle;
+extern TaskHandle_t offload_task_handle;
 
 #endif // SHARED_RTOS_H

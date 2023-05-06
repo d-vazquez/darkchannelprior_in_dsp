@@ -61,7 +61,7 @@ void dehaze_task(void *arg)
     ret = mount_sd_filesystem();
 
     // ------------ Opening file
-    const char *file_src = MOUNT_POINT "/fuente.bin";
+    const char *file_src = MOUNT_POINT "/hazy.bin";
     unsigned char *img_buffer = NULL;
     size_t img_buffer_lenght = 0;
 
@@ -70,7 +70,7 @@ void dehaze_task(void *arg)
     ESP_LOGI(TAG, "img_buffer ptr should be null %p", img_buffer  );
 
 
-    read_from_file(file_src, &img_buffer, &img_buffer_lenght);
+    // read_from_file(file_src, &img_buffer, &img_buffer_lenght);
 
     ESP_LOGI(TAG, "img_buffer_lenght %d",img_buffer_lenght);
     ESP_LOGI(TAG, "img_buffer %p", img_buffer);
@@ -80,7 +80,8 @@ void dehaze_task(void *arg)
     ESP_LOGI(TAG, "uxTaskGetStackHighWaterMark: %u bytes, Core: %d", uxTaskGetStackHighWaterMark(NULL), xPortGetCoreID());
 
     
-    Mat I(480, 640, CV_8UC3, img_buffer);
+    // Mat I(480, 640, CV_8UC3, img_buffer);
+    Mat I(480, 640, CV_8UC3, Scalar(255,255,255));
     Mat J;
 
     dehaze(I, J);
@@ -90,8 +91,10 @@ void dehaze_task(void *arg)
     ESP_LOGI(TAG, "uxTaskGetStackHighWaterMark: %u bytes, Core: %d", uxTaskGetStackHighWaterMark(NULL), xPortGetCoreID());
 
     // Create output file
+#if defined(STORE_MAT_FILE)
     const char *file_dst = MOUNT_POINT "/restored.bin";
     write_MAT_to_file(file_dst, J);
+#endif
 
     ESP_LOGE(TAG, "Exit.....");
 

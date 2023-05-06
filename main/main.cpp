@@ -48,13 +48,13 @@ StackType_t xStack1[ STACK_SIZE1 ];
 StaticTask_t xTaskBuffer0;
 StaticTask_t xTaskBuffer1;
 
+TaskHandle_t mat_split_task_handle = NULL;
+TaskHandle_t offload_task_handle = NULL;
 
 void app_main()
 {
     static char TAG[] = "startup_task";
     ESP_LOGI(TAG, "Starting main");
-
-    TaskHandle_t mat_split_task_handle = NULL;
 
     /* Create queues */
     // Create a queue capable of containing 10 pointers to AMessage structures.

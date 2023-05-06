@@ -16,7 +16,6 @@
 // QueueHandle_t       xDehazeToOffload_Queue;
 // QueueHandle_t       xOffloadToDehaze_Queue;
 // EventGroupHandle_t  xMatEvents;
-TaskHandle_t        offload_task_handle = NULL;
 
 
 using namespace std;
@@ -35,8 +34,22 @@ void dehaze_offload_task(void *arg)
     while(1)
     {
         ESP_LOGW(TAG, "waiting for message...");
-        if (xQueueReceive(xDehazeToOffload_Queue, (void *)&message_rx, OFFLOAD_EVENT_WAIT_MS) == pdTRUE) 
+        
+        
+
+        if (pdTRUE == xTaskGenericNotifyWait(0x00,          // UBaseType_t uxIndexToWaitOn, 
+                                             0x00,          // uint32_t ulBitsToClearOnEntry, 
+                                             0x00,          // uint32_t ulBitsToClearOnExit, 
+                                             (uint32_t *)&message_rx,   // uint32_t *pulNotificationValue, 
+                                             portMAX_DELAY  // TickType_t xTicksToWait
+                                            ) ) 
+        // if (xQueueReceive(xDehazeToOffload_Queue, (void *)&message_rx, OFFLOAD_EVENT_WAIT_MS) == pdTRUE) 
         {
+            long now = esp_timer_get_time();
+            ESP_LOGW(TAG, "message received...Core %d ts: %li micro-seconds", xPortGetCoreID(), now);
+            
+            ESP_LOGW(TAG, "Value received %p", message_rx);
+
             // offload message
             Mat         *src   = message_rx->src;
             Mat         *dst   = message_rx->dst;
@@ -46,8 +59,6 @@ void dehaze_offload_task(void *arg)
             dehaze_op   opcode = message_rx->opcode;
 
             ESP_LOGW(TAG, "id:        %d", message_rx->id);
-            ESP_LOGW(TAG, "Operation: %d", opcode);
-            ESP_LOGW(TAG, "size:      %d", size);
 
             switch(opcode)
             {
@@ -85,10 +96,11 @@ void dehaze_offload_task(void *arg)
                     break;
                 }
             }
-
-            ESP_LOGW(TAG, "Sending event");
+            now = esp_timer_get_time();
+            ESP_LOGW(TAG, "Sending event, %li", now);
             xEventGroupSetBits(xMatEvents, MAT_SPLIT_EVENT);
-            ESP_LOGW(TAG, "Event sent");
+            now = esp_timer_get_time();
+            ESP_LOGW(TAG, "Event sent %li", now);
         }
         else
         {

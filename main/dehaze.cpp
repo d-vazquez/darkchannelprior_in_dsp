@@ -17,9 +17,7 @@
 
 
 QueueHandle_t       xDehazeToOffload_Queue;
-// QueueHandle_t       xOffloadToDehaze_Queue;
 EventGroupHandle_t  xMatEvents;
-// TaskHandle_t        offload_task_handle = NULL;
 
 using namespace cv;
 using namespace std;
@@ -79,8 +77,10 @@ void dehaze(cv::Mat &src, cv::Mat &dst)
 
     stop_darkc = esp_timer_get_time();
 
+#if defined(STORE_MAT_FILE)
     printf("Storing Dark channel");
     write_MAT_to_file("/sdcard/darkc.bin", te);
+#endif
 
     printf("");
     printf("+++ Calculating AtmLight");
@@ -110,9 +110,10 @@ void dehaze(cv::Mat &src, cv::Mat &dst)
     stop_tranEst = esp_timer_get_time();
     printf("--- Returning TransmissionEstimate...");
 
+#if defined(STORE_MAT_FILE)
     printf("Storing TransmissionEstimate");
     write_MAT_to_file("/sdcard/t_est.bin", te);
-
+#endif
 
     printf("");
     printf("+++ Calculating TransmissionRefine");
@@ -127,8 +128,10 @@ void dehaze(cv::Mat &src, cv::Mat &dst)
     stop_tranRef = esp_timer_get_time();
     printf("--- Returning TransmissionRefine...");
 
+#if defined(STORE_MAT_FILE)
     printf("Storing TransmissionRefine");
     write_MAT_to_file("/sdcard/t_ref.bin", te);
+#endif
 
     printf("");
     printf("+++ Calculating Recover");
@@ -255,30 +258,43 @@ const Scalar AtmLight(Mat &im, Mat &dark)
 
 void parallel_DarkChannel(Mat &src_T, Mat &src_B, int sz, Mat &dst_T, Mat &dst_B)
 {
-    printf("Sending message");
     message_tx->id      = 911;
     message_tx->opcode  = DARK_CHANNEL_OP;
     message_tx->src      = &src_B;
     message_tx->dst      = &dst_B;
-    xQueueSend( xDehazeToOffload_Queue, ( void * ) &message_tx, ( TickType_t ) 0 );
+
+    long now = esp_timer_get_time();
+    printf("Sending message, Core %d ts: %li micro-seconds", xPortGetCoreID(), now);
+    printf("Pointer to send: %p", message_tx);
+    // xQueueSend( xDehazeToOffload_Queue, ( void * ) &message_tx, ( TickType_t ) 0 );
+    xTaskGenericNotify( offload_task_handle,        // TaskHandle_t xTaskToNotify, 
+                        0x00,                       // UBaseType_t uxIndexToNotify, 
+                        (uint32_t)message_tx,       // uint32_t ulValue, 
+                        eSetValueWithoutOverwrite,  // eNotifyAction eAction, 
+                        NULL                        // uint32_t *pulPreviousNotificationValue
+                        );
+    now = esp_timer_get_time();
+    printf("message sent, Core %d ts: %li micro-seconds", xPortGetCoreID(), now);
 
     // Process half Mat
     DarkChannel(src_T, sz, dst_T);
 
-    printf("Waiting Rendezvous");   
+    now = esp_timer_get_time();
+    printf("Waiting Rendezvous, %li", now);   
     uxBits = xEventGroupWaitBits(xMatEvents,       // Event group handler
                                  MAT_SPLIT_EVENT,  // Event to wait for
                                  pdTRUE,           // clear bits
                                  pdFALSE,          // do not wait for all, either event suffice
                                  portMAX_DELAY);   // wait forever
-    
-    printf("Rendezvous received");   
+    now = esp_timer_get_time();
+    printf("Rendezvous received, %li", now);   
 }
 
 void DarkChannel(Mat &img, int sz,  Mat &dst)
 {
     int start_heap = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-    printf("Start DarkChannel, Free heap: %d bytes", start_heap);
+    long now = esp_timer_get_time();
+    printf("Start DarkChannel, Free heap: %d bytes Core %d ts: %li micro-seconds", start_heap, xPortGetCoreID(), now);
     
     dst = Mat::zeros(img.rows, img.cols, CV_8UC1);
     
@@ -333,6 +349,7 @@ void TransmissionEstimate(Mat &im, Scalar A, int sz, Mat &dst)
     printf("Start TransmissionEstimate, Free heap: %d bytes", start_heap);
     
     float omega = 0.95;
+
     Mat iaux;
 
     vector<Mat> im_ch(3);
