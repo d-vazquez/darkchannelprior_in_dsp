@@ -16,7 +16,7 @@
 #include "dehaze.h"
 
 
-#define block_size 503910
+// #define block_size 503910
 
 
 using namespace cv;
@@ -40,18 +40,18 @@ void dehaze_task(void *arg)
 
     ESP_LOGI(TAG, "Allocating memory");
 
-    char *image_buffer = (char *)heap_caps_malloc(sizeof(char) * block_size, MALLOC_CAP_SPIRAM);
+    // char *image_buffer = (char *)heap_caps_malloc(sizeof(char) * block_size, MALLOC_CAP_SPIRAM);
 
-    if (NULL == image_buffer)
-    {
-        ESP_LOGE(TAG, "Error allocating memory");
-        return;
-    }
-    ESP_LOGI(TAG, "memory value allocated: %x", image_buffer[0]);
+    // if (NULL == image_buffer)
+    // {
+    //     ESP_LOGE(TAG, "Error allocating memory");
+    //     return;
+    // }
+    // ESP_LOGI(TAG, "memory value allocated: %x", image_buffer[0]);
 
-    image_buffer[0] = 0xDE;
+    // image_buffer[0] = 0xDE;
 
-    ESP_LOGI(TAG, "memory value after write: %x", image_buffer[0]);
+    // ESP_LOGI(TAG, "memory value after write: %x", image_buffer[0]);
 
     ESP_LOGI(TAG, "memory wrote");
 
@@ -70,18 +70,25 @@ void dehaze_task(void *arg)
     ESP_LOGI(TAG, "img_buffer ptr should be null %p", img_buffer  );
 
 
-    // read_from_file(file_src, &img_buffer, &img_buffer_lenght);
+    Mat I;
 
-    ESP_LOGI(TAG, "img_buffer_lenght %d",img_buffer_lenght);
-    ESP_LOGI(TAG, "img_buffer %p", img_buffer);
+    if(ret == ESP_OK)
+    {
+        read_from_file(file_src, &img_buffer, &img_buffer_lenght);
 
-    ESP_LOGI(TAG, "Reading image to MAT");
-    ESP_LOGI(TAG, "Free heap: %u bytes", heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
-    ESP_LOGI(TAG, "uxTaskGetStackHighWaterMark: %u bytes, Core: %d", uxTaskGetStackHighWaterMark(NULL), xPortGetCoreID());
+        ESP_LOGI(TAG, "img_buffer_lenght %d",img_buffer_lenght);
+        ESP_LOGI(TAG, "img_buffer %p", img_buffer);
 
-    
-    // Mat I(480, 640, CV_8UC3, img_buffer);
-    Mat I(480, 640, CV_8UC3, Scalar(255,255,255));
+        ESP_LOGI(TAG, "Reading image to MAT");
+        ESP_LOGI(TAG, "Free heap: %u bytes", heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+        ESP_LOGI(TAG, "uxTaskGetStackHighWaterMark: %u bytes, Core: %d", uxTaskGetStackHighWaterMark(NULL), xPortGetCoreID());
+        
+        I = Mat(480, 640, CV_8UC3, img_buffer);
+    }
+    else
+    {
+        I = Mat(480, 640, CV_8UC3, Scalar(255,255,255));
+    }
     Mat J;
 
     dehaze(I, J);

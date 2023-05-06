@@ -8,12 +8,14 @@
 #include <esp_log.h>
 #include <esp_heap_caps.h>
 #include <esp_task_wdt.h>
+#include <esp_ipc.h>
 
 #include <vector>
 
 #include "dehaze.h"
 #include "shared_rtos.h"
 #include "offload_task.h"
+#include "dehaze_parallelize.h"
 
 
 QueueHandle_t       xDehazeToOffload_Queue;
@@ -27,20 +29,14 @@ static char TAG[] = "dehaze";
 #define printf(...) ESP_LOGI(TAG, ##__VA_ARGS__)
 
 extern void  write_MAT_to_file(const char *file_dst, cv::Mat &src);
-void         parallel_DarkChannel(Mat &src_T, Mat &src_B, int sz, Mat &dst_T, Mat &dst_B);
-const Scalar parallel_AtmLight(Mat &src_T, Mat &src_B, Mat &dark_T, Mat &dark_B);
-void         parallel_TransmissionEstimate(Mat &src_T, Mat &src_B, Scalar A, int sz, Mat &dst_T, Mat &dst_B);
-void         parallel_TransmissionRefine(Mat &src_T, Mat &src_B, Mat &dst_T, Mat &dst_B);
-void         parallel_Recover(Mat &src_T, Mat &src_B, Mat &te_T, Mat &te_B, Mat &dst_T, Mat &dst_B, Scalar A,  int tx);
 
 static xQMatMessage _message;
-static xQMatMessage *message_tx = &_message;
-static EventBits_t  uxBits = 0x00;
+xQMatMessage *message_tx = &_message;
 
 // Measure time
 long stop_darkc, start_darkc, stop_atml, start_atml, stop_tranEst, start_tranEst = 0;
 long stop_tranRef, start_tranRef, stop_recover, start_recover = 0;
-
+long darkc_time, atml_time, transEst_time, transRef_time, recover_time, dehaze_time = 0;  
 
 void dehaze(cv::Mat &src, cv::Mat &dst)
 {
@@ -55,27 +51,25 @@ void dehaze(cv::Mat &src, cv::Mat &dst)
     int start_heap = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
     printf("Start dehaze, Free heap: %d bytes", start_heap);
     
-    Mat te;
-    te  = Mat(src.rows, src.cols, CV_8UC1);
     
+    Mat te  = Mat(src.rows, src.cols, CV_8UC1);
+#ifdef PARALLELIZE
     Mat te_T, te_B, src_T, src_B, dst_T, dst_B;
-
-    printf("Splitting Src Mat");
     mat_split(src, src_T, src_B);
-    printf("Splitting te Mat");
     mat_split(te, te_T, te_B);
-
-    printf("");
-    printf("+++ Calculating dark channel");
-    start_darkc = esp_timer_get_time();
+#endif
     
-#if !defined(PARALELLIZE)
+    printf("");
+    printf("+++ Calculating dark channel");    
+#if !defined(PARALLELIZE)
+    start_darkc = esp_timer_get_time(); 
     DarkChannel(src,15,te);
+    stop_darkc = esp_timer_get_time();
 #else
     parallel_DarkChannel(src_T, src_B, 15, te_T, te_B); 
 #endif
-
-    stop_darkc = esp_timer_get_time();
+    printf("start: %07li us stop: %07li us", start_darkc, stop_darkc);
+    printf("Total time used for darkchannel: %07li us", stop_darkc - start_darkc);
 
 #if defined(STORE_MAT_FILE)
     printf("Storing Dark channel");
@@ -84,31 +78,26 @@ void dehaze(cv::Mat &src, cv::Mat &dst)
 
     printf("");
     printf("+++ Calculating AtmLight");
+#if !defined(PARALLELIZE)
     start_atml = esp_timer_get_time();
-
-#if !defined(PARALELLIZE)
     Scalar A = AtmLight(src,te);
+    stop_atml = esp_timer_get_time();
 #else
     Scalar A = parallel_AtmLight(src_T, src_B, te_T, te_B);
 #endif
-    
     printf("Atmlight = [%f %f %f]", A.val[0], A.val[1], A.val[2]);
-    stop_atml = esp_timer_get_time();
-    printf("--- Returning AtmLight...");
-
-
+    
     printf("");
     printf("+++ Calculating TransmissionEstimate");
-    start_tranEst = esp_timer_get_time();
+    
 
-#if !defined(PARALELLIZE)
+#if !defined(PARALLELIZE)
+    start_tranEst = esp_timer_get_time();
     TransmissionEstimate(src,A,15, te);
+    stop_tranEst = esp_timer_get_time();
 #else
     parallel_TransmissionEstimate(src_T, src_B, A, 15, te_T, te_B);
 #endif
-
-    stop_tranEst = esp_timer_get_time();
-    printf("--- Returning TransmissionEstimate...");
 
 #if defined(STORE_MAT_FILE)
     printf("Storing TransmissionEstimate");
@@ -119,7 +108,7 @@ void dehaze(cv::Mat &src, cv::Mat &dst)
     printf("+++ Calculating TransmissionRefine");
     start_tranRef = esp_timer_get_time();
     
-#if !defined(PARALELLIZE)
+#if !defined(PARALLELIZE)
     TransmissionRefine(src, te);
 #else
     parallel_TransmissionRefine(src_T, src_B, te_T, te_B);
@@ -135,10 +124,10 @@ void dehaze(cv::Mat &src, cv::Mat &dst)
 
     printf("");
     printf("+++ Calculating Recover");
+#if !defined(PARALLELIZE)
     start_recover = esp_timer_get_time();
-    
-#if !defined(PARALELLIZE)
     Recover(src, te, dst, A, 1);
+    stop_recover = esp_timer_get_time();
 #else
     dst = Mat(src.rows, src.cols, CV_8UC3);
     printf("Splitting dst Mat");
@@ -147,19 +136,17 @@ void dehaze(cv::Mat &src, cv::Mat &dst)
     parallel_Recover(src_T, src_B, te_T, te_B, dst_T, dst_B, A, 1);
 #endif
 
-    stop_recover = esp_timer_get_time();
-    printf("--- Returning Recover...");
 
-    int end_heap = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-    printf("End dehaze, Free heap: %d bytes", end_heap);
-    ESP_LOGW(TAG,"Total memory used by dehaze: %d bytes", (start_heap - end_heap));
+    // int end_heap = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    // printf("End dehaze, Free heap: %d bytes", end_heap);
+    // ESP_LOGW(TAG,"Total memory used by dehaze: %d bytes", (start_heap - end_heap));
 
-    long darkc_time    = (stop_darkc - start_darkc);
-    long atml_time     = (stop_atml - start_atml);
-    long transEst_time = (stop_tranEst - start_tranEst);
-    long transRef_time = (stop_tranRef - start_tranRef);
-    long recover_time  = (stop_recover - start_recover);
-    long dehaze_time   = darkc_time + atml_time + transEst_time + transRef_time + recover_time;
+    darkc_time    = (stop_darkc - start_darkc);
+    atml_time     = (stop_atml - start_atml);
+    transEst_time = (stop_tranEst - start_tranEst);
+    transRef_time = (stop_tranRef - start_tranRef);
+    recover_time  = (stop_recover - start_recover);
+    dehaze_time   = darkc_time + atml_time + transEst_time + transRef_time + recover_time;
 
     printf("Total time used for darkchannel: %07li us", darkc_time);
     printf("Total time used for atmLight:    %07li us", atml_time);
@@ -179,48 +166,11 @@ void mat_split(Mat &src, Mat &top, Mat &bot)
     bot = src(Range(src.rows/2,src.rows), Range(0,src.cols));
 }
 
-const Scalar parallel_AtmLight(Mat &src_T, Mat &src_B, Mat &dark_T, Mat &dark_B)
-{
-    Scalar A_B; 
-    Scalar A_T;
-    Scalar A; 
-    printf("Sending message");
-    message_tx->id      = 420;
-    message_tx->opcode  = ATMLIGHT_OP;
-    message_tx->src      = &src_B;
-    message_tx->dst      = &dark_B;
-    message_tx->atmlight= &A_B;
-    xQueueSend( xDehazeToOffload_Queue, ( void * ) &message_tx, ( TickType_t ) 0 );
-
-    // Process half Mat
-    A_T = AtmLight(src_T, dark_T);
-
-    printf("Waiting Rendezvous");   
-    uxBits = xEventGroupWaitBits(xMatEvents,       // Event group handler
-                                 MAT_SPLIT_EVENT,  // Event to wait for
-                                 pdTRUE,           // clear bits
-                                 pdFALSE,          // do not wait for all, either event suffice
-                                 portMAX_DELAY);   // wait forever
-    
-    printf("Rendezvous received");   
-    
-    // consolidate atmospheric light
-    A.val[0] = cv::max(A_T.val[0], A_B.val[0]);
-    A.val[1] = cv::max(A_T.val[1], A_B.val[1]);
-    A.val[2] = cv::max(A_T.val[2], A_B.val[2]);
-    
-    printf("A_T           = [%f %f %f]", A_T.val[0], A_T.val[1], A_T.val[2]);
-    printf("message_rx->A = [%f %f %f]", A_B.val[0], A_B.val[1], A_B.val[2]);
-    printf("A             = [%f %f %f]", A.val[0], A.val[1], A.val[2]);
-
-    return A;
-}
-
 const Scalar AtmLight(Mat &im, Mat &dark)
 {
     int start_heap = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-    printf("Start AtmLight, Free heap: %d bytes", start_heap);
-    
+    long now = esp_timer_get_time();
+    printf("Start AtmLight im[%d,%d], Free heap: %d bytes Core %d ts: %li micro-seconds", im.rows, im.cols ,start_heap, xPortGetCoreID(), now);
 
     int _rows = im.rows;
     int _cols = im.cols;
@@ -256,45 +206,11 @@ const Scalar AtmLight(Mat &im, Mat &dark)
     return atmsum;
 }
 
-void parallel_DarkChannel(Mat &src_T, Mat &src_B, int sz, Mat &dst_T, Mat &dst_B)
-{
-    message_tx->id      = 911;
-    message_tx->opcode  = DARK_CHANNEL_OP;
-    message_tx->src      = &src_B;
-    message_tx->dst      = &dst_B;
-
-    long now = esp_timer_get_time();
-    printf("Sending message, Core %d ts: %li micro-seconds", xPortGetCoreID(), now);
-    printf("Pointer to send: %p", message_tx);
-    // xQueueSend( xDehazeToOffload_Queue, ( void * ) &message_tx, ( TickType_t ) 0 );
-    xTaskGenericNotify( offload_task_handle,        // TaskHandle_t xTaskToNotify, 
-                        0x00,                       // UBaseType_t uxIndexToNotify, 
-                        (uint32_t)message_tx,       // uint32_t ulValue, 
-                        eSetValueWithoutOverwrite,  // eNotifyAction eAction, 
-                        NULL                        // uint32_t *pulPreviousNotificationValue
-                        );
-    now = esp_timer_get_time();
-    printf("message sent, Core %d ts: %li micro-seconds", xPortGetCoreID(), now);
-
-    // Process half Mat
-    DarkChannel(src_T, sz, dst_T);
-
-    now = esp_timer_get_time();
-    printf("Waiting Rendezvous, %li", now);   
-    uxBits = xEventGroupWaitBits(xMatEvents,       // Event group handler
-                                 MAT_SPLIT_EVENT,  // Event to wait for
-                                 pdTRUE,           // clear bits
-                                 pdFALSE,          // do not wait for all, either event suffice
-                                 portMAX_DELAY);   // wait forever
-    now = esp_timer_get_time();
-    printf("Rendezvous received, %li", now);   
-}
-
 void DarkChannel(Mat &img, int sz,  Mat &dst)
 {
     int start_heap = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
     long now = esp_timer_get_time();
-    printf("Start DarkChannel, Free heap: %d bytes Core %d ts: %li micro-seconds", start_heap, xPortGetCoreID(), now);
+    printf("Start DarkChannel im[%d,%d], Free heap: %d bytes Core %d ts: %li micro-seconds", img.rows, img.cols ,start_heap, xPortGetCoreID(), now);
     
     dst = Mat::zeros(img.rows, img.cols, CV_8UC1);
     
@@ -319,34 +235,10 @@ void DarkChannel(Mat &img, int sz,  Mat &dst)
     printf("Total memory used by DarkChannel: %d bytes", (start_heap - end_heap));
 }
 
-void parallel_TransmissionEstimate(Mat &src_T, Mat &src_B, Scalar A, int sz, Mat &dst_T, Mat &dst_B)
-{
-    printf("Sending message");
-    message_tx->id      = 690;
-    message_tx->opcode  = TRANSMITION_ESTIMATE_OP;
-    message_tx->src      = &src_B;
-    message_tx->dst      = &dst_B;
-    message_tx->atmlight= &A;
-    message_tx->ksize   = sz;
-    xQueueSend( xDehazeToOffload_Queue, ( void * ) &message_tx, ( TickType_t ) 0 );
-
-    // Process half Mat
-    TransmissionEstimate(src_T, A, sz, dst_T);
-
-    printf("Waiting Rendezvous");   
-    uxBits = xEventGroupWaitBits(xMatEvents,       // Event group handler
-                                 MAT_SPLIT_EVENT,  // Event to wait for
-                                 pdTRUE,           // clear bits
-                                 pdFALSE,          // do not wait for all, either event suffice
-                                 portMAX_DELAY);   // wait forever
-    
-    printf("Rendezvous received");  
-}
-
 void TransmissionEstimate(Mat &im, Scalar A, int sz, Mat &dst)
 {
     int start_heap = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-    printf("Start TransmissionEstimate, Free heap: %d bytes", start_heap);
+    printf("Start TransmissionEstimate im[%d,%d], Free heap: %d bytes", im.rows, im.cols, start_heap);
     
     float omega = 0.95;
 
@@ -378,38 +270,11 @@ void TransmissionEstimate(Mat &im, Scalar A, int sz, Mat &dst)
     ESP_LOGW(TAG,"Total memory used by TransmissionEstimate: %d bytes", (start_heap - end_heap));
 }
 
-void parallel_TransmissionRefine(Mat &src_T, Mat &src_B, Mat &dst_T, Mat &dst_B)
-{
-    ESP_LOGI(TAG, "uxTaskGetStackHighWaterMark: %u bytes, Core: %d", uxTaskGetStackHighWaterMark(NULL), xPortGetCoreID());
-
-    printf("Sending message");
-    message_tx->id      = 123;
-    message_tx->opcode  = TRANSMITION_REFINE_OP;
-    message_tx->src      = &src_B;
-    message_tx->dst      = &dst_B;
-    message_tx->atmlight= NULL;
-    message_tx->ksize   = 0;
-    xQueueSend( xDehazeToOffload_Queue, ( void * ) &message_tx, ( TickType_t ) 0 );
-
-    // Process half Mat
-    TransmissionRefine(src_T, dst_T);
-
-    printf("Waiting Rendezvous");   
-    uxBits = xEventGroupWaitBits(xMatEvents,       // Event group handler
-                                 MAT_SPLIT_EVENT,  // Event to wait for
-                                 pdTRUE,           // clear bits
-                                 pdFALSE,          // do not wait for all, either event suffice
-                                 portMAX_DELAY);   // wait forever
-    
-    printf("Rendezvous received");  
-
-}
-
 void TransmissionRefine(Mat &im, Mat &et)
 {
 
     int start_heap = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-    printf("++ Start TransmissionRefine, Free heap: %d bytes", start_heap);
+    printf("++ Start TransmissionRefine im[%d,%d], Free heap: %d bytes", im.rows, im.cols, start_heap);
     ESP_LOGI(TAG, "uxTaskGetStackHighWaterMark: %u bytes, Core: %d", uxTaskGetStackHighWaterMark(NULL), xPortGetCoreID());
     
     Mat gray;
@@ -510,38 +375,12 @@ void Guidedfilter(Mat &im_grey, Mat &transmission_map, int r, float eps)
     ESP_LOGW(TAG,"++++ Total memory used by Guidedfilter: %d bytes", (start_heap - end_heap));
 }
 
-void parallel_Recover(Mat &src_T, Mat &src_B, Mat &te_T, Mat &te_B, Mat &dst_T, Mat &dst_B, Scalar A, int tx)
-{
-    printf("Sending message");
-    message_tx->id      = 369;
-    message_tx->opcode  = RECOVER_OP;
-    message_tx->src      = &src_B;
-    message_tx->dst      = &dst_B;
-    message_tx->aux      = &te_B;
-    message_tx->atmlight= &A;
-    message_tx->ksize   = tx;
-    xQueueSend( xDehazeToOffload_Queue, ( void * ) &message_tx, ( TickType_t ) 0 );
-
-    // Process half Mat
-    Recover(src_T, te_T, dst_T, A, tx);
-
-    printf("Waiting Rendezvous");   
-    uxBits = xEventGroupWaitBits(xMatEvents,       // Event group handler
-                                 MAT_SPLIT_EVENT,  // Event to wait for
-                                 pdTRUE,           // clear bits
-                                 pdFALSE,          // do not wait for all, either event suffice
-                                 portMAX_DELAY);   // wait forever
-    
-    printf("Rendezvous received");  
-
-}
-
 void Recover(Mat &im, Mat &t, Mat &dst, Scalar A, int tx)
 {
     int start_heap = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-    printf("++++ Start Recover, Free heap: %d bytes", start_heap);
+    printf("++++ Start Recover im[%d,%d], Free heap: %d bytes", im.rows, im.cols, start_heap);
     
-#if !defined(PARALELLIZE)
+#if !defined(PARALLELIZE)
     dst = Mat::zeros(im.rows, im.cols, im.type());
 #endif
     
@@ -561,4 +400,3 @@ void Recover(Mat &im, Mat &t, Mat &dst, Scalar A, int tx)
     printf("++++ End Recover, Free heap: %d bytes", end_heap);
     ESP_LOGW(TAG,"++++ Total memory used by Recover: %d bytes", (start_heap - end_heap));
 }
-

@@ -30,20 +30,17 @@ void dehaze_offload_task(void *arg)
     static char TAG[] = "Mat_offload";
     ESP_LOGW(TAG, "Starting task in Core %d", xPortGetCoreID());
     
-
     while(1)
     {
-        ESP_LOGW(TAG, "waiting for message...");
+        // ESP_LOGW(TAG, "waiting for message...");
         
-        
-
-        if (pdTRUE == xTaskGenericNotifyWait(0x00,          // UBaseType_t uxIndexToWaitOn, 
-                                             0x00,          // uint32_t ulBitsToClearOnEntry, 
-                                             0x00,          // uint32_t ulBitsToClearOnExit, 
-                                             (uint32_t *)&message_rx,   // uint32_t *pulNotificationValue, 
-                                             portMAX_DELAY  // TickType_t xTicksToWait
-                                            ) ) 
-        // if (xQueueReceive(xDehazeToOffload_Queue, (void *)&message_rx, OFFLOAD_EVENT_WAIT_MS) == pdTRUE) 
+        // if (pdTRUE == xTaskGenericNotifyWait(0x00,          // UBaseType_t uxIndexToWaitOn, 
+        //                                      0xff,          // uint32_t ulBitsToClearOnEntry, 
+        //                                      0xff,          // uint32_t ulBitsToClearOnExit, 
+        //                                      (uint32_t *)&message_rx,   // uint32_t *pulNotificationValue, 
+        //                                      portMAX_DELAY  // TickType_t xTicksToWait
+        //                                     ) ) 
+        if (xQueueReceive(xDehazeToOffload_Queue, (void *)&message_rx, OFFLOAD_EVENT_WAIT_MS) == pdTRUE) 
         {
             long now = esp_timer_get_time();
             ESP_LOGW(TAG, "message received...Core %d ts: %li micro-seconds", xPortGetCoreID(), now);
@@ -70,8 +67,6 @@ void dehaze_offload_task(void *arg)
                 case ATMLIGHT_OP:
                 {
                     *AtmL = AtmLight(*src, *dst);
-                    ESP_LOGW(TAG, "Atmlight = [%f %f %f]", (*AtmL).val[0], (*AtmL).val[1], (*AtmL).val[2]);
-                    
                     break;
                 }
                 case TRANSMITION_ESTIMATE_OP:
@@ -104,7 +99,7 @@ void dehaze_offload_task(void *arg)
         }
         else
         {
-            ESP_LOGW(TAG, "timeout waiting for message");
+            // ESP_LOGW(TAG, "timeout waiting for message");
         }
     }
 }

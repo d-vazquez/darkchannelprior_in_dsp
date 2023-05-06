@@ -1,7 +1,5 @@
 
 #include "opencv_interface.h"
-
-
 #include <esp_log.h>
 #include <string>
 #include "sdkconfig.h"
@@ -27,26 +25,31 @@
 
 #include "shared_rtos.h"
 
-
-
 using namespace cv;
 using namespace std;
-
 
 extern "C"
 {
     void app_main(void);
 }
 
+#ifdef PARALLELIZE
+    #define DEHAZE_TASK_PRIO (1)
+    // #define DEHAZE_TASK_PRIO (configMAX_PRIORITIES - 2)
+    #define DEHAZE_STACK_SIZE (1024 * 35)
+    StackType_t xDehaze_stack[ DEHAZE_STACK_SIZE ];
+    StaticTask_t xDehaze_TaskBuffer;
 
-void mat_split(Mat &src, Mat &top, Mat &bot);
-
-#define STACK_SIZE0 (1024 * 40)
-#define STACK_SIZE1 (1024 * 40)
-StackType_t xStack0[ STACK_SIZE0 ];
-StackType_t xStack1[ STACK_SIZE1 ];
-StaticTask_t xTaskBuffer0;
-StaticTask_t xTaskBuffer1;
+    #define OFFLOAD_TASK_PRIO (1)
+    #define OFFLOAD_STACK_SIZE (1024 * 35)
+    StackType_t xOffload_stack[ OFFLOAD_STACK_SIZE ];
+    StaticTask_t xOffload_TaskBuffer;
+#else
+    #define DEHAZE_TASK_PRIO (1)
+    #define DEHAZE_STACK_SIZE (1024 * 40)
+    StackType_t xDehaze_stack[ DEHAZE_STACK_SIZE ];
+    StaticTask_t xDehaze_TaskBuffer;
+#endif
 
 TaskHandle_t mat_split_task_handle = NULL;
 TaskHandle_t offload_task_handle = NULL;
@@ -77,27 +80,22 @@ void app_main()
     /* Start the tasks */
     mat_split_task_handle = xTaskCreateStaticPinnedToCore(dehaze_task,              // Function Ptr
                                                         "dehaze Task",              // Name
-                                                        STACK_SIZE0,                // Stack size
+                                                        DEHAZE_STACK_SIZE,                // Stack size
                                                         nullptr,                    // Parameter
-                                                        configMAX_PRIORITIES - 2,   // Prio
-                                                        xStack0,                    // Static stack array
-                                                        &xTaskBuffer0,              // Static TCB
-                                                        0);                         // Core 0
-    
+                                                        DEHAZE_TASK_PRIO,   // Prio
+                                                        xDehaze_stack,                    // Static stack array
+                                                        &xDehaze_TaskBuffer,              // Static TCB
+                                                        tskNO_AFFINITY);                         // Core 0
+#ifdef PARALLELIZE
     offload_task_handle = xTaskCreateStaticPinnedToCore(dehaze_offload_task,        // Function Ptr
                                                         "Offload Task",             // Name
-                                                        STACK_SIZE1,                // Stack size
+                                                        OFFLOAD_STACK_SIZE,                // Stack size
                                                         nullptr,                    // Parameter
-                                                        configMAX_PRIORITIES - 2,   // Prio
-                                                        xStack1,                    // Static stack array
-                                                        &xTaskBuffer1,              // Static TCB
-                                                        1);                         // Core 1
+                                                        OFFLOAD_TASK_PRIO,   // Prio
+                                                        xOffload_stack,                    // Static stack array
+                                                        &xOffload_TaskBuffer,              // Static TCB
+                                                        tskNO_AFFINITY);            // Core 1
+#endif
 }
-
-
-
-
-
-
 
 

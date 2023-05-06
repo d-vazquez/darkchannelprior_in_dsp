@@ -5,6 +5,7 @@ idf_component_register(
             offload_task.cpp
             dehaze_task.cpp
             filesystem.cpp
+            dehaze_parallelize.cpp
             
         INCLUDE_DIRS
             .

@@ -21,11 +21,12 @@ typedef struct _queueMatMessage
     cv::Mat             *dst;
     cv::Mat             *aux;
     cv::Scalar          *atmlight;
+    int                 done;
 } xQMatMessage;
 
 
 #define MAT_SPLIT_EVENT (0x01)
-#define PARALELLIZE
+#define PARALLELIZE
 
 extern QueueHandle_t       xDehazeToOffload_Queue;
 extern EventGroupHandle_t  xMatEvents;
