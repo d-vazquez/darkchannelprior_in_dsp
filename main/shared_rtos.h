@@ -27,6 +27,7 @@ typedef struct _queueMatMessage
 
 #define MAT_SPLIT_EVENT (0x01)
 #define PARALLELIZE
+#define STORE_MAT_FILE
 
 extern QueueHandle_t       xDehazeToOffload_Queue;
 extern EventGroupHandle_t  xMatEvents;

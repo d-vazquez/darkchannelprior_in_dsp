@@ -55,8 +55,8 @@ void dehaze(cv::Mat &src, cv::Mat &dst)
     Mat te  = Mat(src.rows, src.cols, CV_8UC1);
 #ifdef PARALLELIZE
     Mat te_T, te_B, src_T, src_B, dst_T, dst_B;
-    mat_split(src, src_T, src_B);
-    mat_split(te, te_T, te_B);
+    mat_split(src, src_T, src_B, 15);
+    mat_split(te, te_T, te_B, 15);
 #endif
     
     printf("");
@@ -131,7 +131,7 @@ void dehaze(cv::Mat &src, cv::Mat &dst)
 #else
     dst = Mat(src.rows, src.cols, CV_8UC3);
     printf("Splitting dst Mat");
-    mat_split(dst, dst_T, dst_B);
+    mat_split(dst, dst_T, dst_B, 15);
 
     parallel_Recover(src_T, src_B, te_T, te_B, dst_T, dst_B, A, 1);
 #endif
@@ -158,12 +158,41 @@ void dehaze(cv::Mat &src, cv::Mat &dst)
     return; 
 }
 
-void mat_split(Mat &src, Mat &top, Mat &bot)
+void mat_split(Mat &src, Mat &top, Mat &bot, uint32_t overlap)
 {
     printf("Mat :: rows = %d, cols = %d", src.rows, src.cols);
     printf("Mat :: rows/2 = %d", src.rows/2);
-    top = src(Range(0,src.rows/2), Range(0,src.cols));
-    bot = src(Range(src.rows/2,src.rows), Range(0,src.cols));
+    top = src(Range(0,src.rows/2 + overlap), Range(0,src.cols));
+    bot = src(Range(src.rows/2 - overlap,src.rows), Range(0,src.cols));
+}
+
+void DarkChannel(Mat &img, int sz,  Mat &dst)
+{
+    int start_heap = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    long now = esp_timer_get_time();
+    printf("Start DarkChannel im[%d,%d], Free heap: %d bytes Core %d ts: %li micro-seconds", img.rows, img.cols ,start_heap, xPortGetCoreID(), now);
+    
+    dst = Mat::zeros(img.rows, img.cols, CV_8UC1);
+    
+    // Reduce memory
+    for(int row = 0; row < img.rows; row++)
+    {
+        for(int col = 0; col < img.cols; col++)
+        {
+            dst.at<uchar>(row,col) = cv::min(cv::min(img.at<Vec3b>(row,col)[0], img.at<Vec3b>(row,col)[1]), img.at<Vec3b>(row,col)[2]);
+        }
+    }
+
+    printf("Start spltting, Free heap: %d bytes",  heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+
+    // 'erode' image, so calculate the minimun value in the window given by sz
+    Mat kernel = getStructuringElement(cv::MorphShapes::MORPH_RECT, Size(sz,sz));
+    
+    cv::erode(dst, dst, kernel, Point((int)(sz/2),(int)(sz/2)), 1, cv::BORDER_REFLECT_101);
+
+    int end_heap = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    printf("End DarkChannel, Free heap: %d bytes", end_heap);
+    printf("Total memory used by DarkChannel: %d bytes", (start_heap - end_heap));
 }
 
 const Scalar AtmLight(Mat &im, Mat &dark)
@@ -204,35 +233,6 @@ const Scalar AtmLight(Mat &im, Mat &dark)
     ESP_LOGW(TAG,"Total memory used by AtmLight: %d bytes", (start_heap - end_heap));
 
     return atmsum;
-}
-
-void DarkChannel(Mat &img, int sz,  Mat &dst)
-{
-    int start_heap = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-    long now = esp_timer_get_time();
-    printf("Start DarkChannel im[%d,%d], Free heap: %d bytes Core %d ts: %li micro-seconds", img.rows, img.cols ,start_heap, xPortGetCoreID(), now);
-    
-    dst = Mat::zeros(img.rows, img.cols, CV_8UC1);
-    
-    // Reduce memory
-    for(int row = 0; row < img.rows; row++)
-    {
-        for(int col = 0; col < img.cols; col++)
-        {
-            dst.at<uchar>(row,col) = cv::min(cv::min(img.at<Vec3b>(row,col)[0], img.at<Vec3b>(row,col)[1]), img.at<Vec3b>(row,col)[2]);
-        }
-    }
-
-    printf("Start spltting, Free heap: %d bytes",  heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
-
-    // 'erode' image, so calculate the minimun value in the window given by sz
-    Mat kernel = getStructuringElement(cv::MorphShapes::MORPH_RECT, Size(sz,sz));
-    
-    cv::erode(dst, dst, kernel, Point((int)(sz/2),(int)(sz/2)), 1, cv::BORDER_REFLECT_101);
-
-    int end_heap = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-    printf("End DarkChannel, Free heap: %d bytes", end_heap);
-    printf("Total memory used by DarkChannel: %d bytes", (start_heap - end_heap));
 }
 
 void TransmissionEstimate(Mat &im, Scalar A, int sz, Mat &dst)

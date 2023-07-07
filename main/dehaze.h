@@ -17,7 +17,7 @@ typedef enum
 } dehaze_op;
 
 void dehaze   (cv::Mat &src, cv::Mat &dst);
-void mat_split(cv::Mat &src, cv::Mat &top, cv::Mat &bot);
+void mat_split(cv::Mat &src, cv::Mat &top, cv::Mat &bot, uint32_t overlap = 0);
 void DarkChannel(cv::Mat &img, int sz,  cv::Mat &dst);
 const cv::Scalar AtmLight(cv::Mat &img, cv::Mat &dark);
 void TransmissionEstimate(cv::Mat &im, cv::Scalar A, int sz, cv::Mat &dst);
