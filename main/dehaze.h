@@ -2,6 +2,12 @@
 #ifndef DEHAZE_H
 #define DEHAZE_H
 
+/**
+* @file dehaze.h
+* @brief Dehazing API
+* @author Dario Vazquez
+*/
+
 #include "opencv_interface.h"
 #include <iostream>
 #include <vector>
@@ -24,7 +30,5 @@ void TransmissionEstimate(cv::Mat &im, cv::Scalar A, int sz, cv::Mat &dst);
 void Recover(cv::Mat &im, cv::Mat &t, cv::Mat &dst, cv::Scalar A, int tx);
 void TransmissionRefine(cv::Mat &im, cv::Mat &et);
 void Guidedfilter(cv::Mat &im_grey, cv::Mat &transmission_map, int r, float eps);
-
-
 
 #endif // DEHAZE_H

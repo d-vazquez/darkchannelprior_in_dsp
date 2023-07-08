@@ -4,23 +4,29 @@
 #include "freertos/task.h"
 #include "freertos/timers.h"
 #include "freertos/event_groups.h"
-
-
 #include "filesystem.h"
 #include "offload_task.h"
 #include "shared_rtos.h"
 #include <esp_log.h>
-
 #include "opencv_interface.h"
 #include "dehaze_task.h"
 #include "dehaze.h"
 
+/**
+* @file dehaze_task.cpp
+* @brief Core 0 dehazing task source
+* @author Dario Vazquez
+*/
 
 #define block_size 503910
 
-
 using namespace cv;
 
+/**
+ * RTOS Task that performs the dehazing algorithm
+ * @author Dario Vazquez
+ * @param arg RTOS style parameter input to the Task, in this purpose args is NULL
+ */
 void dehaze_task(void *arg)
 {
     static char TAG[] = "dehaze_task";
@@ -103,6 +109,12 @@ void dehaze_task(void *arg)
     return;
 }
 
+/**
+ * This method will be used to print a string to the lcd.
+ * @author Dario Vazquez
+ * @param file_dst File path including name of the image to write into SD Card
+ * @param src Mat structure containing the image to save into SD Card
+ */
 void write_MAT_to_file(const char *file_dst, cv::Mat &src)
 {
     write_to_file(file_dst, src.data, src.rows * src.cols * src.channels());

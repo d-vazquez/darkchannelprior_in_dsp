@@ -1,27 +1,30 @@
 
-
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/timers.h"
 #include "freertos/event_groups.h"
-
-
 #include "offload_task.h"
 #include "shared_rtos.h"
 #include <esp_log.h>
-
 #include "opencv_interface.h"
 #include "dehaze.h"
 
-// QueueHandle_t       xDehazeToOffload_Queue;
-// QueueHandle_t       xOffloadToDehaze_Queue;
-// EventGroupHandle_t  xMatEvents;
-TaskHandle_t        offload_task_handle = NULL;
+/**
+* @file offload_task.cpp
+* @brief Core 1 offload task header
+* @author Dario Vazquez
+*/
 
+TaskHandle_t        offload_task_handle = NULL;
 
 using namespace std;
 using namespace cv;
 
+/**
+ * Task in Core 1 that paralelizes image processingm, waits for event from Core 0 
+ * @author Dario Vazquez
+ * @param arg RTOS style parameter input to the Task, in this purpose args is NULL
+ */
 void dehaze_offload_task(void *arg)
 {
     // Task memory

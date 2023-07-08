@@ -1,7 +1,34 @@
+/** 
+ * @mainpage 
+ *
+ * @section Description
+ * This project intends to implement and benchmark the dark channel prior algorithm in an
+ * ESP32 platform.
+ * This project aims to parallelize the dark channel prior algorithm by offloading some of the 
+ * processing load to the second core.
+ * 
+ * Taking advantage of the ESP32 Lx6 dual symetric core architecture, we use Core0 as the App
+ * processor and Core1 as the parallel offload processor.
+ * 
+ * @subsection repo Repository
+ * Project repository: https://github.com/d-vazquez/darkchannelprior_in_dsp
+ * 
+ * @subsection how_to How to build documentation
+ * If documentation is broken, generate it by:
+ * 
+ * @subsubsection pre_req Prerequisites
+ * @code
+ * brew install doxygen
+ * brew install graphviz
+ * @endcode
+ * 
+ * @subsubsection gen Generate
+ * @code
+ * doxygen
+ * @endcode
+ */
 
 #include "opencv_interface.h"
-
-
 #include <esp_log.h>
 #include <string>
 #include "sdkconfig.h"
@@ -10,34 +37,32 @@
 #include <sys/stat.h>
 #include <esp_err.h>
 #include <esp_spiffs.h>
-
 #include "esp_vfs_fat.h"
 #include "sdmmc_cmd.h"
 #include <esp_heap_caps.h>
-
 #include "dehaze.h"
 #include "offload_task.h"
 #include "dehaze_task.h"
 #include "filesystem.h"
-
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/timers.h"
 #include "freertos/event_groups.h"
-
 #include "shared_rtos.h"
 
-
+/**
+ * @file main.cpp
+ * @brief Main entry point for the program, Task are defined and assigned to its predetermined core
+ * 
+ */
 
 using namespace cv;
 using namespace std;
-
 
 extern "C"
 {
     void app_main(void);
 }
-
 
 void mat_split(Mat &src, Mat &top, Mat &bot);
 
@@ -48,7 +73,12 @@ StackType_t xStack1[ STACK_SIZE1 ];
 StaticTask_t xTaskBuffer0;
 StaticTask_t xTaskBuffer1;
 
-
+/** 
+ * @brief Main function
+ *
+ * Entry point for the program, the main structure of the System is defined here, the Queue to be used
+ * for comunication between cores, and the Tasks than run the dehazing process
+ */
 void app_main()
 {
     static char TAG[] = "startup_task";

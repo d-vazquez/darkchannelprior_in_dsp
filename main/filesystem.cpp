@@ -5,19 +5,27 @@
 #include "sdmmc_cmd.h"
 #include "filesystem.h"
 
-static char TAG[] = "filesystem";
+/**
+* @file filesystem.cpp
+* @brief Source for file operations on the SD Card
+* @author Dario Vazquez
+*/
 
+static char TAG[] = "filesystem";
 
 #define CONFIG_EXAMPLE_PIN_MOSI 15
 #define CONFIG_EXAMPLE_PIN_MISO 2
 #define CONFIG_EXAMPLE_PIN_CLK 14
 #define CONFIG_EXAMPLE_PIN_CS 13
-
 #define PIN_NUM_MISO CONFIG_EXAMPLE_PIN_MISO
 #define PIN_NUM_MOSI CONFIG_EXAMPLE_PIN_MOSI
 #define PIN_NUM_CLK CONFIG_EXAMPLE_PIN_CLK
 #define PIN_NUM_CS CONFIG_EXAMPLE_PIN_CS
 
+/**
+ * Mounting FAT filesystem that reads SD Card
+ * @author Dario Vazquez
+ */
 esp_err_t mount_sd_filesystem(void)
 {
     esp_err_t ret;
@@ -92,6 +100,13 @@ esp_err_t mount_sd_filesystem(void)
     return ret;
 }
 
+/**
+ * Read a file from SD Card
+ * @author Dario Vazquez
+ * @param file_src File path to be read
+ * @param data Pointer in which to write the read image
+ * @param lenght Image size in bytes 
+ */
 void read_from_file(const char *file_src, unsigned char **data, size_t *lenght)
 {
     ESP_LOGI(TAG, "Opening file %s", file_src);
@@ -126,6 +141,13 @@ void read_from_file(const char *file_src, unsigned char **data, size_t *lenght)
     fclose(f_src);
 }
 
+/**
+ * Write a file to SD Card
+ * @author Dario Vazquez
+ * @param file_dst File path in which to write the file, including file name
+ * @param data Pointer to memory location of the image
+ * @param lenght Image size in bytes
+ */
 void write_to_file(const char *file_dst, unsigned char *data, size_t lenght)
 {
     ESP_LOGI(TAG, "Opening file %s", file_dst);

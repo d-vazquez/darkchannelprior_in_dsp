@@ -1,25 +1,24 @@
 
-
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/timers.h"
 #include "freertos/event_groups.h"
-
 #include <esp_log.h>
 #include <esp_heap_caps.h>
 #include <esp_task_wdt.h>
-
 #include <vector>
-
 #include "dehaze.h"
 #include "shared_rtos.h"
 #include "offload_task.h"
 
+/**
+* @file dehaze.cpp
+* @brief Dehazing API Source file
+* @author Dario Vazquez
+*/
 
 QueueHandle_t       xDehazeToOffload_Queue;
-// QueueHandle_t       xOffloadToDehaze_Queue;
 EventGroupHandle_t  xMatEvents;
-// TaskHandle_t        offload_task_handle = NULL;
 
 using namespace cv;
 using namespace std;
@@ -43,7 +42,12 @@ static EventBits_t  uxBits = 0x00;
 long stop_darkc, start_darkc, stop_atml, start_atml, stop_tranEst, start_tranEst = 0;
 long stop_tranRef, start_tranRef, stop_recover, start_recover = 0;
 
-
+/**
+ * Dehazing main function, it runs the image thru the steps of the dark channel prior algorithm
+ * @author Dario Vazquez
+ * @param src Input hazy Image in Mat format
+ * @param dst Output dehazed Image in Mat format
+ */
 void dehaze(cv::Mat &src, cv::Mat &dst)
 {
     message_tx->id      = 0;
@@ -168,6 +172,15 @@ void dehaze(cv::Mat &src, cv::Mat &dst)
     return; 
 }
 
+/**
+ * Image splitting function, the image is not actually splitted, but a MAT structure is created
+ * referencing the top and bottom part as if they were different MAT images, this is done to
+ * parallelize the image processing
+ * @author Dario Vazquez
+ * @param src Input Image in Mat format
+ * @param top Output ROI structure pointing to the top half of the image
+ * @param top Output ROI structure pointing to the bottom half of the image
+ */
 void mat_split(Mat &src, Mat &top, Mat &bot)
 {
     printf("Mat :: rows = %d, cols = %d", src.rows, src.cols);
@@ -176,6 +189,17 @@ void mat_split(Mat &src, Mat &top, Mat &bot)
     bot = src(Range(src.rows/2,src.rows), Range(0,src.cols));
 }
 
+/**
+ * Handles a parallel processing of the Atmospheric light process, it loads information from one
+ * half of the image and sends it to Core1, the other half is processed in Core0 and then halts
+ * waiting for Core1 to finish, once it finishes function returns
+ * @author Dario Vazquez
+ * @param src_T Input image top part
+ * @param src_B Input image bottom part
+ * @param dark_T Output image top part
+ * @param dark_B Output image bottom part
+ * @retval Atmospheric light in Scalar
+ */
 const Scalar parallel_AtmLight(Mat &src_T, Mat &src_B, Mat &dark_T, Mat &dark_B)
 {
     Scalar A_B; 
@@ -213,6 +237,13 @@ const Scalar parallel_AtmLight(Mat &src_T, Mat &src_B, Mat &dark_T, Mat &dark_B)
     return A;
 }
 
+/**
+ * Atmospheric light process, it calculates atmospheric light for the scene
+ * @author Dario Vazquez
+ * @param im input image
+ * @param dark Dark channel image
+ * @retval Atmospheric light in Scalar
+ */
 const Scalar AtmLight(Mat &im, Mat &dark)
 {
     int start_heap = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
@@ -253,6 +284,17 @@ const Scalar AtmLight(Mat &im, Mat &dark)
     return atmsum;
 }
 
+/**
+ * Handles a parallel processing of the Dark channel process, it loads information from one
+ * half of the image and sends it to Core1, the other half is processed in Core0 and then halts
+ * waiting for Core1 to finish, once it finishes function returns
+ * @author Dario Vazquez
+ * @param src_T Input image top part
+ * @param src_B Input image bottom part
+ * @param sz Kernel size for Dark channel erode
+ * @param dst_T Output image top part
+ * @param dst_B Output image bottom part
+ */
 void parallel_DarkChannel(Mat &src_T, Mat &src_B, int sz, Mat &dst_T, Mat &dst_B)
 {
     printf("Sending message");
@@ -275,6 +317,13 @@ void parallel_DarkChannel(Mat &src_T, Mat &src_B, int sz, Mat &dst_T, Mat &dst_B
     printf("Rendezvous received");   
 }
 
+/**
+ * Dark channel process, calculates the dark channel of the input image
+ * @author Dario Vazquez
+ * @param im input image
+ * @param sz kernel size for erode
+ * @param dst Dark channel output image
+ */
 void DarkChannel(Mat &img, int sz,  Mat &dst)
 {
     int start_heap = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
@@ -303,6 +352,18 @@ void DarkChannel(Mat &img, int sz,  Mat &dst)
     printf("Total memory used by DarkChannel: %d bytes", (start_heap - end_heap));
 }
 
+/**
+ * Handles a parallel processing of the Transmission estimate process, it loads information from one
+ * half of the image and sends it to Core1, the other half is processed in Core0 and then halts
+ * waiting for Core1 to finish, once it finishes function returns
+ * @author Dario Vazquez
+ * @param src_T Input image top part
+ * @param src_B Input image bottom part
+ * @param A Atmospheric light array
+ * @param sz kernel size for Dark channel
+ * @param dst_T Output image top part
+ * @param dst_B Output image bottom part
+ */
 void parallel_TransmissionEstimate(Mat &src_T, Mat &src_B, Scalar A, int sz, Mat &dst_T, Mat &dst_B)
 {
     printf("Sending message");
@@ -327,6 +388,15 @@ void parallel_TransmissionEstimate(Mat &src_T, Mat &src_B, Scalar A, int sz, Mat
     printf("Rendezvous received");  
 }
 
+/**
+ * Transmission estimate process, it calculates the scene transmission map using
+ * an eroded dark channel
+ * @author Dario Vazquez
+ * @param im input image
+ * @param A atmospheric light image
+ * @param sz Dark channel kernel size
+ * @param dst Transmission map output
+ */
 void TransmissionEstimate(Mat &im, Scalar A, int sz, Mat &dst)
 {
     int start_heap = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
@@ -361,6 +431,16 @@ void TransmissionEstimate(Mat &im, Scalar A, int sz, Mat &dst)
     ESP_LOGW(TAG,"Total memory used by TransmissionEstimate: %d bytes", (start_heap - end_heap));
 }
 
+/**
+ * Handles a parallel processing of the Transmission refine process, it loads information from one
+ * half of the image and sends it to Core1, the other half is processed in Core0 and then halts
+ * waiting for Core1 to finish, once it finishes function returns
+ * @author Dario Vazquez
+ * @param src_T Input image top part
+ * @param src_B Input image bottom part
+ * @param dst_T Output image top part
+ * @param dst_B Output image bottom part
+ */
 void parallel_TransmissionRefine(Mat &src_T, Mat &src_B, Mat &dst_T, Mat &dst_B)
 {
     ESP_LOGI(TAG, "uxTaskGetStackHighWaterMark: %u bytes, Core: %d", uxTaskGetStackHighWaterMark(NULL), xPortGetCoreID());
@@ -388,9 +468,17 @@ void parallel_TransmissionRefine(Mat &src_T, Mat &src_B, Mat &dst_T, Mat &dst_B)
 
 }
 
+/**
+ * Transmission refine process, the transmission estimate is precessed by the dark channel kernel size
+ * so its degradated, a guided filter is calculated using the original image, and its applied to the 
+ * transmission estimate, the output transmission refined map is written on top of the transmission estimate
+ * to save memory
+ * @author Dario Vazquez
+ * @param im input image input
+ * @param et Transmission map input, the refined tranmission map is written on top of this to save memory
+ */
 void TransmissionRefine(Mat &im, Mat &et)
 {
-
     int start_heap = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
     printf("++ Start TransmissionRefine, Free heap: %d bytes", start_heap);
     ESP_LOGI(TAG, "uxTaskGetStackHighWaterMark: %u bytes, Core: %d", uxTaskGetStackHighWaterMark(NULL), xPortGetCoreID());
@@ -415,6 +503,17 @@ void TransmissionRefine(Mat &im, Mat &et)
     ESP_LOGW(TAG,"++ Total memory used by TransmissionRefine: %d bytes", (start_heap - end_heap));
 }
 
+/**
+ * Transmission refine process, the transmission estimate is precessed by the dark channel kernel size
+ * so its degradated, a guided filter is calculated using the original image, and its applied to the 
+ * transmission estimate, the output transmission refined map is written on top of the transmission estimate
+ * to save memory
+ * @author Dario Vazquez
+ * @param im_grey input image input in grey scale (guide)
+ * @param transmission_map Image to be filtered, the output is written on top of this to save memory
+ * @param r kernel width for the box filter
+ * @param eps small number to avoid div by 0
+ */
 void Guidedfilter(Mat &im_grey, Mat &transmission_map, int r, float eps)
 { 
     int start_heap = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
@@ -493,6 +592,20 @@ void Guidedfilter(Mat &im_grey, Mat &transmission_map, int r, float eps)
     ESP_LOGW(TAG,"++++ Total memory used by Guidedfilter: %d bytes", (start_heap - end_heap));
 }
 
+/**
+ * Handles a parallel processing of the recovery process, it loads information from one
+ * half of the image and sends it to Core1, the other half is processed in Core0 and then halts
+ * waiting for Core1 to finish, once it finishes function returns
+ * @author Dario Vazquez
+ * @param src_T Input image top part
+ * @param src_B Input image bottom part
+ * @param te_T Transmission map top part
+ * @param te_B Transmission map bottom part
+ * @param dst_T Output image top part
+ * @param dst_B Output image bottom part
+ * @param A Atmospheric light array (Scalar)
+ * @param tx Small value to avoid div by 0
+ */
 void parallel_Recover(Mat &src_T, Mat &src_B, Mat &te_T, Mat &te_B, Mat &dst_T, Mat &dst_B, Scalar A, int tx)
 {
     printf("Sending message");
@@ -519,6 +632,18 @@ void parallel_Recover(Mat &src_T, Mat &src_B, Mat &te_T, Mat &te_B, Mat &dst_T, 
 
 }
 
+/**
+ * Transmission refine process, the transmission estimate is precessed by the dark channel kernel size
+ * so its degradated, a guided filter is calculated using the original image, and its applied to the 
+ * transmission estimate, the output transmission refined map is written on top of the transmission estimate
+ * to save memory
+ * @author Dario Vazquez
+ * @param src Input hazy image
+ * @param te Transmission map 
+ * @param dst Output dehazed image 
+ * @param A Atmospheric light array (Scalar)
+ * @param tx Small value to avoid div by 0
+ */
 void Recover(Mat &im, Mat &t, Mat &dst, Scalar A, int tx)
 {
     int start_heap = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);

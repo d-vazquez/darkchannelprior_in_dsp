@@ -2,15 +2,20 @@
 #ifndef SHARED_RTOS_H
 #define SHARED_RTOS_H
 
-
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/timers.h"
 #include "freertos/event_groups.h"
 #include "freertos/queue.h"
-
 #include "opencv_interface.h"
 #include "dehaze.h"
+
+/**
+ * @file shared_rtos.h
+ * @brief Header for the shared resources on the Cores in the system, here is contained a reference to the Queue and the
+ * event handle 
+ * @author Dario Vazquez
+ */
 
 typedef struct _queueMatMessage
 {
@@ -23,12 +28,10 @@ typedef struct _queueMatMessage
     cv::Scalar          *atmlight;
 } xQMatMessage;
 
-
 #define MAT_SPLIT_EVENT (0x01)
 #define PARALELLIZE
 
 extern QueueHandle_t       xDehazeToOffload_Queue;
 extern EventGroupHandle_t  xMatEvents;
-
 
 #endif // SHARED_RTOS_H
